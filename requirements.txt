@@ -2,3 +2,5 @@ streamlit
 ortools
 pandas
 matplotlib
+folium
+streamlit-folium
