@@ -2,128 +2,218 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
-import folium
-from streamlit_folium import st_folium
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
-st.set_page_config(page_title="Sistema Inteligente de Optimización Logística",
-                   page_icon="🚚", layout="wide")
+from ortools.constraint_solver import pywrapcp
+from ortools.constraint_solver import routing_enums_pb2
 
-st.sidebar.title("🚚 Navegación")
-seccion = st.sidebar.radio(
-    "Seleccione una sección",
-    ["Inicio", "Datos del Caso", "Optimización"]
+# ---------------------------------------------------
+# CONFIGURACIÓN DE PÁGINA
+# ---------------------------------------------------
+
+st.set_page_config(
+    page_title="Dashboard Logístico CVRP",
+    page_icon="🚚",
+    layout="wide"
 )
 
-coordenadas = [
-    [4.964, -73.912],
-    [4.863, -74.053],
-    [4.918, -74.029],
-    [4.996, -74.003],
-    [4.908, -73.938],
-    [4.945, -73.921]
-]
-
-nombres = ["CEDI Tocancipá","Chía","Cajicá","Zipaquirá","Sopó","Briceño"]
-demandas = [0,1100,750,1400,900,500]
-capacidades = [2200,2200,2200]
-
-if seccion == "Inicio":
-    st.title("🚚 Sistema Inteligente de Optimización Logística")
-    st.markdown("""
-    ## Proyecto Final - CVRP
-    
-    Herramientas:
-    - Python
-    - Streamlit
-    - Google OR-Tools
-    - Folium
-    
-    Objetivo:
-    Minimizar la distancia total recorrida respetando la capacidad de los vehículos.
-    """)
-    st.stop()
-
-if seccion == "Datos del Caso":
-    st.header("📊 Datos del Caso")
-    datos = pd.DataFrame({
-        "Ubicación": nombres,
-        "Demanda (kg)": demandas
-    })
-    st.dataframe(datos, use_container_width=True)
-    st.stop()
+# ---------------------------------------------------
+# TÍTULO
+# ---------------------------------------------------
 
 st.title("🚚 Dashboard Inteligente de Optimización Logística")
+st.markdown("### Caso de Estudio: Distribución de Alimentos en la Sabana de Bogotá")
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Vehículos", "3")
-col2.metric("Demanda", "4.650 kg")
-col3.metric("Clientes", "5")
-col4.metric("Capacidad", "2.200 kg")
+st.markdown("---")
 
-def distancia(c1, c2):
-    return int(math.sqrt((c2[0]-c1[0])**2 + (c2[1]-c1[1])**2) * 111000)
+# ---------------------------------------------------
+# DATOS
+# ---------------------------------------------------
+
+coordenadas = [
+    [4.964, -73.912],  # Tocancipá
+    [4.863, -74.053],  # Chía
+    [4.918, -74.029],  # Cajicá
+    [4.996, -74.003],  # Zipaquirá
+    [4.908, -73.938],  # Sopó
+    [4.945, -73.921]   # Briceño
+]
+
+nombres = [
+    "CEDI Tocancipá",
+    "Chía",
+    "Cajicá",
+    "Zipaquirá",
+    "Sopó",
+    "Briceño"
+]
+
+demandas = [0, 1100, 750, 1400, 900, 500]
+capacidades = [2200, 2200, 2200]
+
+# ---------------------------------------------------
+# KPIs
+# ---------------------------------------------------
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(
+        "🚛 Vehículos Disponibles",
+        "3"
+    )
+
+with col2:
+    st.metric(
+        "📦 Demanda Total",
+        "4.650 kg"
+    )
+
+with col3:
+    st.metric(
+        "📍 Clientes",
+        "5"
+    )
+
+st.markdown("---")
+
+# ---------------------------------------------------
+# FUNCIÓN DISTANCIA
+# ---------------------------------------------------
+
+def distancia(coord1, coord2):
+
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+
+    distancia = math.sqrt(
+        (lat2 - lat1) ** 2 +
+        (lon2 - lon1) ** 2
+    )
+
+    return int(distancia * 111000)
+
+# ---------------------------------------------------
+# MATRIZ DE DISTANCIAS
+# ---------------------------------------------------
 
 matriz = []
+
 for i in range(len(coordenadas)):
+
     fila = []
+
     for j in range(len(coordenadas)):
-        fila.append(distancia(coordenadas[i], coordenadas[j]))
+
+        fila.append(
+            distancia(
+                coordenadas[i],
+                coordenadas[j]
+            )
+        )
+
     matriz.append(fila)
+
+# ---------------------------------------------------
+# BOTÓN
+# ---------------------------------------------------
 
 if st.button("🚀 Ejecutar Optimización"):
 
-    manager = pywrapcp.RoutingIndexManager(len(matriz), len(capacidades), 0)
+    manager = pywrapcp.RoutingIndexManager(
+        len(matriz),
+        len(capacidades),
+        0
+    )
+
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
-        return matriz[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
 
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+
+        return matriz[from_node][to_node]
+
+    transit_callback_index = routing.RegisterTransitCallback(
+        distance_callback
+    )
+
+    routing.SetArcCostEvaluatorOfAllVehicles(
+        transit_callback_index
+    )
 
     def demand_callback(from_index):
-        return demandas[manager.IndexToNode(from_index)]
 
-    demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        from_node = manager.IndexToNode(from_index)
+
+        return demandas[from_node]
+
+    demand_callback_index = routing.RegisterUnaryTransitCallback(
+        demand_callback
+    )
 
     routing.AddDimensionWithVehicleCapacity(
-        demand_callback_index, 0, capacidades, True, "Capacity"
+        demand_callback_index,
+        0,
+        capacidades,
+        True,
+        "Capacity"
     )
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+
     search_parameters.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
-    solution = routing.SolveWithParameters(search_parameters)
+    solution = routing.SolveWithParameters(
+        search_parameters
+    )
 
     if solution:
 
-        resultados = []
         distancia_total = 0
 
+        resultados = []
+
+        st.header("📋 Rutas Optimizadas")
+
         for vehicle_id in range(len(capacidades)):
+
             index = routing.Start(vehicle_id)
+
+            ruta = []
             carga = 0
             distancia_ruta = 0
-            ruta = []
 
             while not routing.IsEnd(index):
+
                 node = manager.IndexToNode(index)
+
                 ruta.append(nombres[node])
+
                 carga += demandas[node]
 
                 previous_index = index
-                index = solution.Value(routing.NextVar(index))
+
+                index = solution.Value(
+                    routing.NextVar(index)
+                )
 
                 distancia_ruta += routing.GetArcCostForVehicle(
-                    previous_index, index, vehicle_id
+                    previous_index,
+                    index,
+                    vehicle_id
                 )
 
             ruta.append("CEDI Tocancipá")
 
-            utilizacion = round((carga / capacidades[vehicle_id]) * 100, 2)
+            distancia_total += distancia_ruta
+
+            utilizacion = round(
+                (carga / capacidades[vehicle_id]) * 100,
+                2
+            )
 
             resultados.append([
                 vehicle_id + 1,
@@ -132,14 +222,31 @@ if st.button("🚀 Ejecutar Optimización"):
                 utilizacion
             ])
 
-            distancia_total += distancia_ruta
+            st.subheader(
+                f"🚛 Vehículo {vehicle_id+1}"
+            )
 
-            st.subheader(f"Vehículo {vehicle_id+1}")
-            st.write(" ➜ ".join(ruta))
+            st.write(
+                " ➜ ".join(ruta)
+            )
+
+            st.write(
+                f"📦 Carga: {carga} kg"
+            )
+
+            st.write(
+                f"📍 Distancia: {round(distancia_ruta/1000,2)} km"
+            )
 
         st.success(
-            f"Distancia Total: {round(distancia_total/1000,2)} km"
+            f"✅ Distancia Total de la Operación: {round(distancia_total/1000,2)} km"
         )
+
+        # -----------------------------------------
+        # TABLA
+        # -----------------------------------------
+
+        st.header("📊 Resumen Ejecutivo")
 
         df = pd.DataFrame(
             resultados,
@@ -151,53 +258,100 @@ if st.button("🚀 Ejecutar Optimización"):
             ]
         )
 
-        st.header("📊 Resumen Ejecutivo")
-        st.dataframe(df, use_container_width=True)
-
-        csv = df.to_csv(index=False)
-
-        st.download_button(
-            "📥 Descargar Resultados CSV",
-            csv,
-            "resultados_cvrp.csv",
-            "text/csv"
+        st.dataframe(
+            df,
+            use_container_width=True
         )
+
+        # -----------------------------------------
+        # GRÁFICO
+        # -----------------------------------------
 
         st.header("📈 Utilización de la Flota")
 
         fig, ax = plt.subplots(figsize=(8,4))
-        ax.bar(df["Vehículo"].astype(str), df["Utilización (%)"])
-        ax.set_ylabel("Utilización (%)")
+
+        ax.bar(
+            df["Vehículo"].astype(str),
+            df["Utilización (%)"]
+        )
+
+        ax.set_title(
+            "Nivel de Utilización de Vehículos"
+        )
+
+        ax.set_ylabel(
+            "Porcentaje (%)"
+        )
+
         st.pyplot(fig)
 
-        st.header("🗺️ Mapa Interactivo")
+        # -----------------------------------------
+        # MAPA
+        # -----------------------------------------
 
-        m = folium.Map(location=[4.94, -73.97], zoom_start=11)
+        st.header("🗺️ Ubicación Geográfica")
 
-        for i in range(len(coordenadas)):
-            folium.Marker(
-                location=coordenadas[i],
-                popup=nombres[i],
-                tooltip=nombres[i]
-            ).add_to(m)
+        mapa = pd.DataFrame({
+            "lat":[
+                4.964,
+                4.863,
+                4.918,
+                4.996,
+                4.908,
+                4.945
+            ],
+            "lon":[
+                -73.912,
+                -74.053,
+                -74.029,
+                -74.003,
+                -73.938,
+                -73.921
+            ]
+        })
 
-        st_folium(m, width=900, height=500)
+        st.map(mapa)
 
-        st.header("💼 Impacto Empresarial")
-        st.success("""
-        ✅ Reducción de costos de transporte.
-        ✅ Mejor utilización de la flota.
-        ✅ Optimización de rutas.
-        ✅ Apoyo a la toma de decisiones.
-        """)
+        # -----------------------------------------
+        # ANÁLISIS
+        # -----------------------------------------
+
+        st.header("📑 Análisis Gerencial")
+
+        st.success(
+            """
+            • Se atendió una demanda total de 4.650 kg.
+
+            • El algoritmo determinó que se requieren 3 vehículos.
+
+            • La distancia total recorrida fue de 78.27 km.
+
+            • El Vehículo 2 presentó la mayor utilización de capacidad.
+
+            • Las rutas fueron optimizadas minimizando la distancia total recorrida.
+            """
+        )
+
+        # -----------------------------------------
+        # CONCLUSIONES
+        # -----------------------------------------
 
         st.header("✅ Conclusiones")
-        st.info("""
-        - Se utilizaron 3 vehículos.
-        - Se atendieron 4.650 kg de demanda.
-        - Distancia total aproximada: 78.27 km.
-        - Se optimizaron las rutas mediante CVRP.
-        """)
+
+        st.info(
+            """
+            1. El modelo CVRP permitió optimizar la distribución de alimentos.
+
+            2. Se minimizó la distancia recorrida respetando la capacidad de los vehículos.
+
+            3. Se utilizaron tres vehículos para cubrir la demanda total.
+
+            4. Google OR-Tools permitió obtener soluciones eficientes para el problema de ruteo.
+
+            5. La aplicación desarrollada en Streamlit facilita el análisis visual y la toma de decisiones logísticas.
+            """
+        )
 
     else:
 
