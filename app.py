@@ -100,22 +100,18 @@ def resolver_cvrp_avanzado(
     )
     routing = pywrapcp.RoutingModel(manager)
 
-    # Callbacks de costos por distancia
     def distance_callback(from_index, to_index):
         return matriz[manager.IndexToNode(from_index)][
             manager.IndexToNode(to_index)
         ]
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-
-    # El costo del arco mezcla la distancia con el parámetro financiero por km
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     # Incorporar Costo Fijo por activar cada vehículo
     for i in range(len(capacidades)):
         routing.SetFixedCostOfVehicle(int(costo_fijo), i)
 
-    # Callbacks de demandas y capacidad
     def demand_callback(from_index):
         return demandas[manager.IndexToNode(from_index)]
 
@@ -126,7 +122,6 @@ def resolver_cvrp_avanzado(
         demand_callback_index, 0, capacidades, True, "Capacidad"
     )
 
-    # Configuración de los parámetros de búsqueda de OR-Tools
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
@@ -164,7 +159,6 @@ def resolver_cvrp_avanzado(
         ruta_indices.append(deposito)
         clientes_visitados = [i for i in ruta_indices if i != deposito]
 
-        # Si el vehículo no se usó, se ignora del reporte
         if not clientes_visitados:
             continue
 
@@ -203,20 +197,29 @@ def resolver_cvrp_avanzado(
 
 
 def crear_segmentos_ruta(df, rutas):
-    """Genera los segmentos espaciales para la visualización en PyDeck."""
+    """Genera los segmentos espaciales para la visualización en PyDeck con colores por vehículo."""
+    colores_paleta = [
+        [230, 57, 70, 220],    # Vehículo 1: Rojo
+        [29, 53, 87, 220],     # Vehículo 2: Azul Oscuro
+        [74, 155, 102, 220],   # Vehículo 3: Verde
+        [241, 146, 14, 220],   # Vehículo 4: Naranja
+        [155, 93, 229, 220],   # Vehículo 5: Morado
+        [0, 180, 216, 220]     # Vehículo 6: Celeste
+    ]
+    
     segmentos = []
-    for ruta in rutas:
+    for index_ruta, ruta in enumerate(rutas):
         indices = ruta["Ruta índices"]
+        color_vehiculo = colores_paleta[index_ruta % len(colores_paleta)]
+        
         for origen, destino in zip(indices[:-1], indices[1:]):
             segmentos.append(
                 {
                     "Vehículo": f"Vehículo {ruta['Vehículo']}",
+                    "Color": color_vehiculo,
                     "path": [
                         [df.loc[origen, "Longitud"], df.loc[origen, "Latitud"]],
-                        [
-                            df.loc[destino, "Longitud"],
-                            df.loc[destino, "Latitud"],
-                        ],
+                        [df.loc[destino, "Longitud"], df.loc[destino, "Latitud"]],
                     ],
                 }
             )
@@ -230,7 +233,7 @@ st.title("🚚 Dashboard Inteligente de Optimización Logística Avanzada")
 st.markdown("### Caso de Estudio: Distribución de Alimentos en la Sabana de Bogotá")
 st.markdown("---")
 
-# --- PANEL LATERAL CON NUEVOS PARÁMETROS ---
+# --- PANEL LATERAL CON PARÁMETROS ENRIQUECIDOS ---
 st.sidebar.header("⚙️ Parámetros de la Flota")
 num_vehiculos = st.sidebar.number_input(
     "Número de vehículos disponibles", min_value=1, max_value=10, value=4, step=1
@@ -277,16 +280,16 @@ puntos.loc[DEPOSITO, "Demanda (kg)"] = 0
 nombres = puntos["Nombre"].tolist()
 demandas = puntos["Demanda (kg)"].astype(int).tolist()
 
-# Indicadores clave (KPIs globales previos)
+# Indicadores globales previos
 demanda_total = int(sum(demandas))
 capacidad_total = int(sum(capacidades))
 clientes = len(puntos) - 1
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("🚛 Flota Máxima", num_vehiculos)
-col2.metric("📦 Demanda Requerida", f"{demanda_total:,} kg")
-col3.metric("🏋️ Capacidad Máxima Flota", f"{capacidad_total:,} kg")
-col4.metric("📍 Puntos de Entrega", clientes)
+col1.metric("`🚛 Flota Máxima`", num_vehiculos)
+col2.metric("`📦 Demanda Requerida`", f"{demanda_total:,} kg")
+col3.metric("`🏋️ Capacidad Máxima Flota`", f"{capacidad_total:,} kg")
+col4.metric("`📍 Puntos de Entrega`", clientes)
 st.markdown("---")
 
 if demanda_total > capacidad_total:
@@ -330,7 +333,6 @@ if st.session_state.optimizado and st.session_state.resultado:
 
     st.header("📋 Desglose Técnico por Ruta Activa")
     
-    # Grid de tarjetas de resultados por vehículo
     for r in rutas:
         with st.container():
             st.subheader(f"🚛 Ruta Asignada al Vehículo {r['Vehículo']}")
@@ -342,7 +344,7 @@ if st.session_state.optimizado and st.session_state.resultado:
             st.caption(f"**Secuencia óptima:** {r['Ruta']}")
             st.markdown("---")
 
-    # Resumen y descarga financiera
+    # Resumen y cuadro ejecutivo financiero
     st.header("📊 Cuadro de Mando Financiero y Ejecutivo")
     
     c_m1, c_m2, c_m3 = st.columns(3)
@@ -375,12 +377,12 @@ if st.session_state.optimizado and st.session_state.resultado:
     ax1.set_ylabel("Costo de Operación ($)", color="g")
     ax2.set_ylabel("Nivel de Utilización (%)", color="b")
     ax2.set_ylim(0, 110)
-    plt.title("Análisis de Costo Finaciero frente a la Capacidad Utilizada")
+    plt.title("Análisis de Costo Financiero frente a la Capacidad Utilizada")
     
     st.pyplot(fig)
 
-    # Mapa de Rutas
-    st.header("🗺️ Trazado de Rutas en el Mapa")
+    # Mapa con Trazados de Líneas de Diferentes Colores
+    st.header("🗺️ Trazado de Rutas Independientes en el Mapa")
     mapa_puntos = puntos.rename(columns={"Latitud": "lat", "Longitud": "lon"})
 
     if pdk is not None:
@@ -407,8 +409,9 @@ if st.session_state.optimizado and st.session_state.resultado:
             "PathLayer",
             data=segmentos,
             get_path="path",
-            get_width=4.5,
-            get_color="[220, 50, 50, 200]",
+            get_width=5,
+            get_color="Color",  # <--- Utiliza la columna dinámica de color por vehículo
+            pickable=True,
         )
         
         st.pydeck_chart(
@@ -423,4 +426,5 @@ if st.session_state.optimizado and st.session_state.resultado:
             )
         )
     else:
+        st.warning("PyDeck no está disponible. Mostrando mapa base predeterminado.")
         st.map(mapa_puntos[["lat", "lon"]])
