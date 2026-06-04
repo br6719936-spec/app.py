@@ -1,22 +1,23 @@
 import math
+import random
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 try:
     import pydeck as pdk
 except ImportError:
     pdk = None
 
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
 # ===================================================
-# 1. CONFIGURACIÓN DE LA PÁGINA
+# 1. CONFIGURACIÓN DE LA PÁGINA Y ESTADOS
 # ===================================================
 st.set_page_config(
-    page_title="Dashboard Logístico CVRP Avanzado", page_icon="🚚", layout="wide"
+    page_title="Control Tower Logística CVRP Pro", page_icon="🌐", layout="wide"
 )
 
-# Inicializar estados de sesión para el optimizador
 if "optimizado" not in st.session_state:
     st.session_state.optimizado = False
 if "resultado" not in st.session_state:
@@ -42,7 +43,7 @@ DATOS_INICIALES = pd.DataFrame(
 
 
 # ===================================================
-# 2. FUNCIONES LÓGICAS Y DE OPTIMIZACIÓN
+# 2. FUNCIONES LÓGICAS Y MATEMÁTICAS
 # ===================================================
 def distancia_haversine(coord1, coord2):
     """Calcula la distancia real aproximada entre dos coordenadas (en metros)."""
@@ -79,7 +80,7 @@ def construir_matriz_distancias(df):
     return matriz
 
 
-def resolver_cvrp_avanzado(
+def resolver_cvrp_industrial(
     matriz,
     demandas,
     capacidades,
@@ -90,8 +91,10 @@ def resolver_cvrp_avanzado(
     costo_fijo,
     velocidad,
     tiempo_servicio,
+    factor_trafico,
+    factor_emision,
 ):
-    """Resuelve el problema CVRP incorporando costos y tiempos."""
+    """Resuelve el CVRP avanzado incluyendo sostenibilidad, costos e impacto de tráfico."""
     if sum(demandas) > sum(capacidades):
         return None, "La demanda total supera la capacidad total disponible."
 
@@ -108,7 +111,6 @@ def resolver_cvrp_avanzado(
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-    # Incorporar Costo Fijo por activar cada vehículo
     for i in range(len(capacidades)):
         routing.SetFixedCostOfVehicle(int(costo_fijo), i)
 
@@ -133,11 +135,12 @@ def resolver_cvrp_avanzado(
 
     solution = routing.SolveWithParameters(search_parameters)
     if not solution:
-        return None, "No se encontró una solución factible."
+        return None, "No se encontró una solución factible con los parámetros actuales."
 
     rutas = []
-    distancia_total = 0
-    costo_operativo_total = 0
+    distancia_total_m = 0
+    costo_total = 0
+    co2_total = 0
 
     for vehicle_id in range(len(capacidades)):
         index = routing.Start(vehicle_id)
@@ -163,16 +166,20 @@ def resolver_cvrp_avanzado(
             continue
 
         distancia_km = round(distancia_ruta / 1000, 2)
-        distancia_total += distancia_ruta
+        distancia_total_m += distancia_ruta
 
-        # Cálculo estimado de tiempos (Tránsito + Descargas)
-        tiempo_transito_hrs = distancia_km / velocidad
+        # Innovación: Tiempos alterados por condiciones de tráfico simuladas
+        tiempo_transito_hrs = (distancia_km / velocidad) * factor_trafico
         tiempo_descarga_hrs = (len(clientes_visitados) * tiempo_servicio) / 60
         tiempo_total_ruta = round(tiempo_transito_hrs + tiempo_descarga_hrs, 2)
 
-        # Cálculo financiero por ruta
+        # Innovación: Huella Ecológica e Indicadores de Rendimiento de Costos
         costo_ruta = round((distancia_km * costo_km) + costo_fijo, 2)
-        costo_operativo_total += costo_ruta
+        co2_ruta = round(distancia_km * factor_emision, 2)
+        costo_por_kg = round(costo_ruta / carga, 2) if carga > 0 else 0
+
+        costo_total += costo_ruta
+        co2_total += co2_ruta
 
         rutas.append(
             {
@@ -186,40 +193,46 @@ def resolver_cvrp_avanzado(
                 ),
                 "Tiempo Estimado (horas)": tiempo_total_ruta,
                 "Costo Ruta ($)": costo_ruta,
+                "Costo/Kg ($)": costo_por_kg,
+                "Huella CO2 (kg)": co2_ruta,
             }
         )
 
     return {
         "rutas": rutas,
-        "distancia_total_km": round(distancia_total / 1000, 2),
-        "costo_total_operacion": round(costo_operativo_total, 2),
+        "distancia_total_km": round(distancia_total_m / 1000, 2),
+        "costo_total_operacion": round(costo_total, 2),
+        "co2_total_kg": round(co2_total, 2),
     }, None
 
 
 def crear_segmentos_ruta(df, rutas):
-    """Genera los segmentos espaciales para la visualización en PyDeck con colores por vehículo."""
+    """Genera los segmentos para PyDeck incluyendo colores dinámicos por ID de vehículo."""
     colores_paleta = [
-        [230, 57, 70, 220],    # Vehículo 1: Rojo
-        [29, 53, 87, 220],     # Vehículo 2: Azul Oscuro
-        [74, 155, 102, 220],   # Vehículo 3: Verde
-        [241, 146, 14, 220],   # Vehículo 4: Naranja
-        [155, 93, 229, 220],   # Vehículo 5: Morado
-        [0, 180, 216, 220]     # Vehículo 6: Celeste
+        [230, 57, 70, 220],
+        [29, 53, 87, 220],
+        [74, 155, 102, 220],
+        [241, 146, 14, 220],
+        [155, 93, 229, 220],
+        [0, 180, 216, 220],
     ]
-    
+
     segmentos = []
     for index_ruta, ruta in enumerate(rutas):
         indices = ruta["Ruta índices"]
         color_vehiculo = colores_paleta[index_ruta % len(colores_paleta)]
-        
+
         for origen, destino in zip(indices[:-1], indices[1:]):
             segmentos.append(
                 {
-                    "Vehículo": f"Vehículo {ruta['Vehículo']}",
+                    "Vehículo ID": f"Vehículo {ruta['Vehículo']}",
                     "Color": color_vehiculo,
                     "path": [
                         [df.loc[origen, "Longitud"], df.loc[origen, "Latitud"]],
-                        [df.loc[destino, "Longitud"], df.loc[destino, "Latitud"]],
+                        [
+                            df.loc[destino, "Longitud"],
+                            df.loc[destino, "Latitud"],
+                        ],
                     ],
                 }
             )
@@ -227,50 +240,71 @@ def crear_segmentos_ruta(df, rutas):
 
 
 # ===================================================
-# 3. INTERFAZ DE USUARIO (STREAMLIT)
+# 3. INTERFAZ DE USUARIO (CONTROL TOWER DESIGN)
 # ===================================================
-st.title("🚚 Dashboard Inteligente de Optimización Logística Avanzada")
-st.markdown("### Caso de Estudio: Distribución de Alimentos en la Sabana de Bogotá")
+st.title("🌐 Control Tower: Inteligencia de Rutas & Analítica Sostenible")
+st.markdown("### Modelo Avanzado de Optimización Logística y Reporte de Emisiones ESG")
 st.markdown("---")
 
-# --- PANEL LATERAL CON PARÁMETROS ENRIQUECIDOS ---
-st.sidebar.header("⚙️ Parámetros de la Flota")
+# --- SIDEBAR COMPLETO ---
+st.sidebar.header("⚙️ Configuración de Flota")
 num_vehiculos = st.sidebar.number_input(
-    "Número de vehículos disponibles", min_value=1, max_value=10, value=4, step=1
+    "Vehículos Disponibles", min_value=1, max_value=10, value=4
 )
 capacidad_vehiculo = st.sidebar.number_input(
-    "Capacidad por vehículo (kg)",
-    min_value=100,
-    max_value=10000,
-    value=2200,
-    step=100,
+    "Capacidad Unitaria (kg)", min_value=100, max_value=10000, value=2200, step=100
 )
-
-st.sidebar.header("💰 Parámetros Financieros")
-costo_por_km = st.sidebar.number_input(
-    "Costo variable por kilómetro ($/km)", min_value=0.0, value=3500.0, step=500.0
-)
-costo_fijo_vehiculo = st.sidebar.number_input(
-    "Costo fijo por activar vehículo ($)", min_value=0.0, value=80000.0, step=5000.0
-)
-
-st.sidebar.header("⏱️ Parámetros Operativos (Tiempos)")
-velocidad_promedio = st.sidebar.slider(
-    "Velocidad promedio de tránsito (km/h)", min_value=10, max_value=90, value=40
-)
-tiempo_servicio_cliente = st.sidebar.number_input(
-    "Tiempo de descarga por cliente (minutos)", min_value=0, value=25, step=5
-)
-
-st.sidebar.header("🚀 Configuración del Motor")
-tiempo_busqueda = st.sidebar.slider(
-    "Tiempo límite de optimización (segundos)", min_value=1, max_value=30, value=5
-)
-
 capacidades = [int(capacidad_vehiculo)] * int(num_vehiculos)
 
-# Editor de datos de clientes
-with st.expander("✏️ Editar datos de clientes y demandas"):
+st.sidebar.header("💰 Variables Financieras")
+costo_por_km = st.sidebar.number_input(
+    "Costo Variable por Km ($)", value=3500.0, step=200.0
+)
+costo_fijo_vehiculo = st.sidebar.number_input(
+    "Costo de Activación de Vehículo ($)", value=80000.0, step=5000.0
+)
+
+st.sidebar.header("⏱️ Gestión de Tiempos & Tráfico")
+velocidad_promedio = st.sidebar.slider(
+    "Velocidad Comercial Base (km/h)", min_value=10, max_value=90, value=40
+)
+tiempo_servicio_cliente = st.sidebar.number_input(
+    "Tiempo de Descarga (minutos)", min_value=0, value=25, step=5
+)
+
+# Innovación: Simulación del factor de tráfico en tiempo real
+estado_trafico = st.sidebar.select_slider(
+    "🚦 Simulación de Estado de Tráfico",
+    options=["Fluido (Sin retraso)", "Moderado (+15%)", "Pesado (+40%)"],
+    value="Moderado (+15%)",
+)
+dic_trafico = {
+    "Fluido (Sin retraso)": 1.0,
+    "Moderado (+15%)": 1.15,
+    "Pesado (+40%)": 1.40,
+}
+
+st.sidebar.header("🌱 Indicadores de Sostenibilidad (ESG)")
+tipo_combustible = st.sidebar.selectbox(
+    "Tipo de Vehículo / Combustible",
+    ["Camión Diésel Convencional", "Camión Turbo Gasolina", "Vehículo Híbrido"],
+)
+# Factores reales de emisión aproximados (kg de CO2 por kilómetro)
+dic_emisiones = {
+    "Camión Diésel Convencional": 0.27,
+    "Camión Turbo Gasolina": 0.21,
+    "Vehículo Híbrido": 0.12,
+}
+
+st.sidebar.header("🔬 Motor de Búsqueda")
+tiempo_busqueda = st.sidebar.slider(
+    "Tiempo de Cómputo (segundos)", min_value=1, max_value=20, value=5
+)
+
+# --- FIN SIDEBAR ---
+
+# Formulario interactivo de demanda
+with st.expander("✏️ Registro de Clientes y Demandas en la Sabana de Bogotá"):
     puntos = st.data_editor(
         DATOS_INICIALES, use_container_width=True, num_rows="fixed"
     )
@@ -280,30 +314,28 @@ puntos.loc[DEPOSITO, "Demanda (kg)"] = 0
 nombres = puntos["Nombre"].tolist()
 demandas = puntos["Demanda (kg)"].astype(int).tolist()
 
-# Indicadores globales previos
 demanda_total = int(sum(demandas))
 capacidad_total = int(sum(capacidades))
 clientes = len(puntos) - 1
 
+# KPIs operacionales antes de presionar optimizar
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("`🚛 Flota Máxima`", num_vehiculos)
-col2.metric("`📦 Demanda Requerida`", f"{demanda_total:,} kg")
-col3.metric("`🏋️ Capacidad Máxima Flota`", f"{capacidad_total:,} kg")
-col4.metric("`📍 Puntos de Entrega`", clientes)
+col1.metric("`🚛 Flota Disponible`", num_vehiculos)
+col2.metric("`📦 Demanda Pendiente`", f"{demanda_total:,} kg")
+col3.metric("`🏋️ Capacidad de Carga de Red`", f"{capacidad_total:,} kg")
+col4.metric("`📍 Destinos`", clientes)
 st.markdown("---")
 
 if demanda_total > capacidad_total:
     st.error(
-        "⚠️ Alerta Operativa: La demanda total supera la capacidad máxima de tu flota actual."
+        "🚨 Capacidad Insuficiente: La demanda supera los límites físicos de la flota configurada."
     )
 
-# Matriz de distancias
 matriz = construir_matriz_distancias(puntos)
 
-# Botón ejecutor
-if st.button("🚀 Optimizar Operación Logística", disabled=demanda_total > capacidad_total):
-    with st.spinner("Buscando las mejores rutas de mínimo costo..."):
-        resultado, error = resolver_cvrp_avanzado(
+if st.button("🚀 Ejecutar Algoritmo Genético CVRP", disabled=demanda_total > capacidad_total):
+    with st.spinner("Computando matrices espaciales y optimizando rutas..."):
+        resultado, error = resolver_cvrp_industrial(
             matriz=matriz,
             demandas=demandas,
             capacidades=capacidades,
@@ -314,6 +346,8 @@ if st.button("🚀 Optimizar Operación Logística", disabled=demanda_total > ca
             costo_fijo=costo_fijo_vehiculo,
             velocidad=velocidad_promedio,
             tiempo_servicio=tiempo_servicio_cliente,
+            factor_trafico=dic_trafico[estado_trafico],
+            factor_emision=dic_emisiones[tipo_combustible],
         )
 
         if error:
@@ -324,76 +358,52 @@ if st.button("🚀 Optimizar Operación Logística", disabled=demanda_total > ca
             st.session_state.optimizado = True
 
 # ===================================================
-# 4. VISUALIZACIÓN DE RESULTADOS AVANZADOS
+# 4. DASHBOARD DE RESULTADOS AVANZADOS E INNOVADORES
 # ===================================================
 if st.session_state.optimizado and st.session_state.resultado:
     rutas = st.session_state.resultado["rutas"]
     distancia_total_km = st.session_state.resultado["distancia_total_km"]
     costo_total_operacion = st.session_state.resultado["costo_total_operacion"]
+    co2_total_kg = st.session_state.resultado["co2_total_kg"]
 
-    st.header("📋 Desglose Técnico por Ruta Activa")
-    
-    for r in rutas:
-        with st.container():
-            st.subheader(f"🚛 Ruta Asignada al Vehículo {r['Vehículo']}")
-            c_it1, c_it2, c_it3, c_it4 = st.columns(4)
-            c_it1.write(f"📦 **Carga:** {r['Carga (kg)']} / {capacidad_vehiculo} kg ({r['Utilización (%)']}%)")
-            c_it2.write(f"📍 **Distancia:** {r['Distancia (km)']} km")
-            c_it3.write(f"⏱️ **Duración:** {r['Tiempo Estimado (horas)']} hrs")
-            c_it4.write(f"💰 **Costo de Ruta:** ${r['Costo Ruta ($)']:,}")
-            st.caption(f"**Secuencia óptima:** {r['Ruta']}")
-            st.markdown("---")
-
-    # Resumen y cuadro ejecutivo financiero
-    st.header("📊 Cuadro de Mando Financiero y Ejecutivo")
-    
-    c_m1, c_m2, c_m3 = st.columns(3)
-    c_m1.metric("✅ Distancia Consolidada", f"{distancia_total_km} km")
-    c_m2.metric("💵 Costo Operativo Total", f"${costo_total_operacion:,}")
-    c_m3.metric("🚚 Camiones Utilizados", f"{len(rutas)} de {num_vehiculos}")
-
-    df_resumen = pd.DataFrame(rutas)
-    df_tabla = df_resumen[
-        ["Vehículo", "Carga (kg)", "Distancia (km)", "Utilización (%)", "Tiempo Estimado (horas)", "Costo Ruta ($)", "Ruta"]
-    ]
-    st.dataframe(df_tabla, use_container_width=True)
-
-    st.download_button(
-        label="⬇️ Exportar Manifiesto de Carga (CSV)",
-        data=df_tabla.to_csv(index=False).encode("utf-8"),
-        file_name="manifiesto_rutas_avanzado.csv",
-        mime="text/csv",
+    # --- CUADRO DE MANDOS DE ALTA GERENCIA (KPIs de Innovación) ---
+    st.header("📊 Métricas de Control General")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("💵 Costo Total de Distribución", f"${costo_total_operacion:,}")
+    m2.metric(
+        "🌱 Huella de Carbono del Despacho",
+        f"{co2_total_kg:,} kg CO₂",
+        delta=f"Combustible: {tipo_combustible}",
+        delta_color="inverse",
     )
+    m3.metric("⏱️ Condición de Tránsito", estado_trafico)
+    m4.metric("🚛 Flota Activa en Operación", f"{len(rutas)} Camiones")
+    st.markdown("---")
 
-    # Gráfico comparativo de costos vs utilización
-    st.header("📈 Eficiencia y Costos por Vehículo")
-    fig, ax1 = plt.subplots(figsize=(8, 3.5))
-
-    ax2 = ax1.twinx()
-    ax1.bar(df_resumen["Vehículo"].astype(str), df_resumen["Costo Ruta ($)"], color="g", alpha=0.6, label="Costo ($)")
-    ax2.plot(df_resumen["Vehículo"].astype(str), df_resumen["Utilización (%)"], color="b", marker="o", linewidth=2, label="Utilización %")
-
-    ax1.set_xlabel("Vehículo")
-    ax1.set_ylabel("Costo de Operación ($)", color="g")
-    ax2.set_ylabel("Nivel de Utilización (%)", color="b")
-    ax2.set_ylim(0, 110)
-    plt.title("Análisis de Costo Financiero frente a la Capacidad Utilizada")
-    
-    st.pyplot(fig)
-
-    # Mapa con Trazados de Líneas de Diferentes Colores
-    st.header("🗺️ Trazado de Rutas Independientes en el Mapa")
-    mapa_puntos = puntos.rename(columns={"Latitud": "lat", "Longitud": "lon"})
+    # --- MAPA CON FILTROS DINÁMICOS (Innovación en visualización) ---
+    st.header("🗺️ Torre de Control Mapas e Infraestructura")
 
     if pdk is not None:
-        segmentos = crear_segmentos_ruta(puntos, rutas)
+        df_segmentos = crear_segmentos_ruta(puntos, rutas)
+
+        # Innovación: Permitir al usuario aislar vehículos específicos del mapa en tiempo real
+        lista_vehiculos = df_segmentos["Vehículo ID"].unique().tolist()
+        vehiculos_seleccionados = st.multiselect(
+            "🔍 Filtrar visualización de mapa por Vehículo (vacío para ver todos)",
+            options=lista_vehiculos,
+            default=lista_vehiculos,
+        )
+
+        df_filtrado_segmentos = df_segmentos[
+            df_segmentos["Vehículo ID"].isin(vehiculos_seleccionados)
+        ]
 
         layer_puntos = pdk.Layer(
             "ScatterplotLayer",
             data=puntos,
             get_position="[Longitud, Latitud]",
             get_radius=600,
-            get_fill_color="[34, 139, 34, 200]",
+            get_fill_color="[30, 41, 59, 200]",
             pickable=True,
         )
         layer_texto = pdk.Layer(
@@ -402,18 +412,18 @@ if st.session_state.optimizado and st.session_state.resultado:
             get_position="[Longitud, Latitud]",
             get_text="Nombre",
             get_size=13,
-            get_color="[40, 40, 40, 255]",
+            get_color="[15, 23, 42, 255]",
             get_alignment_baseline="'bottom'",
         )
         layer_rutas = pdk.Layer(
             "PathLayer",
-            data=segmentos,
+            data=df_filtrado_segmentos,
             get_path="path",
-            get_width=5,
-            get_color="Color",  # <--- Utiliza la columna dinámica de color por vehículo
+            get_width=5.5,
+            get_color="Color",
             pickable=True,
         )
-        
+
         st.pydeck_chart(
             pdk.Deck(
                 initial_view_state=pdk.ViewState(
@@ -426,5 +436,74 @@ if st.session_state.optimizado and st.session_state.resultado:
             )
         )
     else:
-        st.warning("PyDeck no está disponible. Mostrando mapa base predeterminado.")
-        st.map(mapa_puntos[["lat", "lon"]])
+        st.map(puntos.rename(columns={"Latitud": "lat", "Longitud": "lon"}))
+
+    # --- TABLA DE REPORTES FINANCIEROS Y OPERATIVOS ---
+    st.header("📋 Analítica Detallada por Ruta de Distribución")
+    df_resumen = pd.DataFrame(rutas)
+    df_tabla = df_resumen[
+        [
+            "Vehículo",
+            "Carga (kg)",
+            "Distancia (km)",
+            "Utilización (%)",
+            "Tiempo Estimado (horas)",
+            "Costo Ruta ($)",
+            "Costo/Kg ($)",
+            "Huella CO2 (kg)",
+            "Ruta",
+        ]
+    ]
+
+    st.dataframe(df_tabla, use_container_width=True)
+
+    st.download_button(
+        label="⬇️ Descargar Reporte Financiero-Ambiental (CSV)",
+        data=df_tabla.to_csv(index=False).encode("utf-8"),
+        file_name="reporte_logistica_integral.csv",
+        mime="text/csv",
+    )
+
+    # --- GRÁFICOS CRUZADOS DE RENDIMIENTO ---
+    st.header("📈 Gráficos de Eficiencia Operativa")
+    g1, g2 = st.columns(2)
+
+    with g1:
+        # Gráfico de costo financiero vs huella ambiental
+        fig1, ax1 = plt.subplots(figsize=(6, 3))
+        ax1.bar(
+            df_resumen["Vehículo"].astype(str),
+            df_resumen["Costo Ruta ($)"],
+            color="#E63946",
+            alpha=0.7,
+            label="Costo ($)",
+        )
+        ax1.set_ylabel("Costo ($)", color="#E63946")
+        ax1.set_xlabel("Vehículos")
+
+        ax1_twin = ax1.twinx()
+        ax1_twin.plot(
+            df_resumen["Vehículo"].astype(str),
+            df_resumen["Huella CO2 (kg)"],
+            color="#4A9B66",
+            marker="s",
+            linewidth=2,
+            label="CO₂ (kg)",
+        )
+        ax1_twin.set_ylabel("Huella CO2 (kg)", color="#4A9B66")
+        plt.title("Relación Costo vs Huella de Carbono por Unidad")
+        st.pyplot(fig1)
+
+    with g2:
+        # Gráfico del costo unitario por kilogramo transportado
+        fig2, ax2 = plt.subplots(figsize=(6, 3))
+        ax2.bar(
+            df_resumen["Vehículo"].astype(str),
+            df_resumen["Costo/Kg ($)"],
+            color="#1D3557",
+            alpha=0.8,
+        )
+        ax2.set_ylabel("Costo por Kg ($/Kg)")
+        ax2.set_xlabel("Vehículos")
+        plt.title("Costo de Distribución Unitario (Eficiencia por Kg)")
+        st.pyplot(fig2)
