@@ -247,7 +247,7 @@ def crear_segmentos_ruta(df, rutas):
 
 
 # ===================================================
-# 3. PANALES DE CONTROL (INTERFAZ GRAFICA)
+# 3. PANELES DE CONTROL (INTERFAZ GRÁFICA)
 # ===================================================
 st.title("🌐 Enterprise Control Tower: Logística & Analítica de Distribución")
 st.markdown("### Centro de Simulación Avanzada de Carga, Costos Operativos y Huella de Carbono (ESG)")
@@ -384,7 +384,7 @@ if st.session_state.optimizado and st.session_state.resultado:
     m4.metric("🛣️ Kilómetros Consolidados", f"{distancia_total_km:,} Km")
     st.markdown("---")
 
-    # --- MAPA CON FILTROS DE RUTA AVANZADOS ---
+    # --- MAPA CON FILTROS DE RUTA AVANZADOS (TEMA CLARO) ---
     st.header("🗺️ Monitoreo Espacial de Rutas por Vehículo")
 
     if pdk is not None:
@@ -398,7 +398,6 @@ if st.session_state.optimizado and st.session_state.resultado:
             default=lista_vehiculos,
         )
 
-        # Si el usuario borra todos los filtros, por defecto muestra todo para evitar mapas vacíos
         if not vehiculos_seleccionados:
             df_filtrado_segmentos = df_segmentos
         else:
@@ -426,12 +425,14 @@ if st.session_state.optimizado and st.session_state.resultado:
             data=df_filtrado_segmentos,
             get_path="path",
             get_width=6,
-            get_color="Color",  # Mapea dinámicamente el color asignado por camión
+            get_color="Color",
             pickable=True,
         )
 
         st.pydeck_chart(
             pdk.Deck(
+                # Modificado a estilo claro urbano para maximizar contraste
+                map_style="mapbox://styles/mapbox/light-v10",
                 initial_view_state=pdk.ViewState(
                     latitude=puntos["Latitud"].mean(),
                     longitude=puntos["Longitud"].mean(),
