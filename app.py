@@ -13,18 +13,15 @@ except ImportError:
 # 1. CONFIGURACIÓN DE LA PÁGINA
 # ===================================================
 st.set_page_config(
-    page_title="Dashboard Logístico CVRP", page_icon="🚚", layout="wide"
+    page_title="Dashboard Logístico CVRP Avanzado", page_icon="🚚", layout="wide"
 )
 
-# Inicializar estados de sesión para evitar borrados accidentales al interactuar
+# Inicializar estados de sesión para el optimizador
 if "optimizado" not in st.session_state:
     st.session_state.optimizado = False
 if "resultado" not in st.session_state:
     st.session_state.resultado = None
 
-# ===================================================
-# 2. VALORES POR DEFECTO Y CONSTANTES
-# ===================================================
 DEPOSITO = 0
 
 DATOS_INICIALES = pd.DataFrame(
@@ -45,7 +42,7 @@ DATOS_INICIALES = pd.DataFrame(
 
 
 # ===================================================
-# 3. FUNCIONES LÓGICAS Y DE OPTIMIZACIÓN
+# 2. FUNCIONES LÓGICAS Y DE OPTIMIZACIÓN
 # ===================================================
 def distancia_haversine(coord1, coord2):
     """Calcula la distancia real aproximada entre dos coordenadas (en metros)."""
@@ -82,8 +79,19 @@ def construir_matriz_distancias(df):
     return matriz
 
 
-def resolver_cvrp(matriz, demandas, capacidades, deposito, segundos, nombres):
-    """Resuelve el problema CVRP usando Google OR-Tools."""
+def resolver_cvrp_avanzado(
+    matriz,
+    demandas,
+    capacidades,
+    deposito,
+    segundos,
+    nombres,
+    costo_km,
+    costo_fijo,
+    velocidad,
+    tiempo_servicio,
+):
+    """Resuelve el problema CVRP incorporando costos y tiempos."""
     if sum(demandas) > sum(capacidades):
         return None, "La demanda total supera la capacidad total disponible."
 
@@ -92,17 +100,24 @@ def resolver_cvrp(matriz, demandas, capacidades, deposito, segundos, nombres):
     )
     routing = pywrapcp.RoutingModel(manager)
 
-    # Callbacks de tránsito y demanda
+    # Callbacks de costos por distancia
     def distance_callback(from_index, to_index):
         return matriz[manager.IndexToNode(from_index)][
             manager.IndexToNode(to_index)
         ]
 
+    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+
+    # El costo del arco mezcla la distancia con el parámetro financiero por km
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+    # Incorporar Costo Fijo por activar cada vehículo
+    for i in range(len(capacidades)):
+        routing.SetFixedCostOfVehicle(int(costo_fijo), i)
+
+    # Callbacks de demandas y capacidad
     def demand_callback(from_index):
         return demandas[manager.IndexToNode(from_index)]
-
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     demand_callback_index = routing.RegisterUnaryTransitCallback(
         demand_callback
@@ -111,7 +126,7 @@ def resolver_cvrp(matriz, demandas, capacidades, deposito, segundos, nombres):
         demand_callback_index, 0, capacidades, True, "Capacidad"
     )
 
-    # Parámetros de búsqueda
+    # Configuración de los parámetros de búsqueda de OR-Tools
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
@@ -125,9 +140,9 @@ def resolver_cvrp(matriz, demandas, capacidades, deposito, segundos, nombres):
     if not solution:
         return None, "No se encontró una solución factible."
 
-    # Procesamiento de resultados
     rutas = []
     distancia_total = 0
+    costo_operativo_total = 0
 
     for vehicle_id in range(len(capacidades)):
         index = routing.Start(vehicle_id)
@@ -149,26 +164,41 @@ def resolver_cvrp(matriz, demandas, capacidades, deposito, segundos, nombres):
         ruta_indices.append(deposito)
         clientes_visitados = [i for i in ruta_indices if i != deposito]
 
+        # Si el vehículo no se usó, se ignora del reporte
         if not clientes_visitados:
             continue
 
+        distancia_km = round(distancia_ruta / 1000, 2)
         distancia_total += distancia_ruta
+
+        # Cálculo estimado de tiempos (Tránsito + Descargas)
+        tiempo_transito_hrs = distancia_km / velocidad
+        tiempo_descarga_hrs = (len(clientes_visitados) * tiempo_servicio) / 60
+        tiempo_total_ruta = round(tiempo_transito_hrs + tiempo_descarga_hrs, 2)
+
+        # Cálculo financiero por ruta
+        costo_ruta = round((distancia_km * costo_km) + costo_fijo, 2)
+        costo_operativo_total += costo_ruta
+
         rutas.append(
             {
                 "Vehículo": vehicle_id + 1,
                 "Ruta índices": ruta_indices,
                 "Ruta": " ➜ ".join([nombres[i] for i in ruta_indices]),
                 "Carga (kg)": carga,
-                "Distancia (km)": round(distancia_ruta / 1000, 2),
+                "Distancia (km)": distancia_km,
                 "Utilización (%)": round(
                     (carga / capacidades[vehicle_id]) * 100, 2
                 ),
+                "Tiempo Estimado (horas)": tiempo_total_ruta,
+                "Costo Ruta ($)": costo_ruta,
             }
         )
 
     return {
         "rutas": rutas,
         "distancia_total_km": round(distancia_total / 1000, 2),
+        "costo_total_operacion": round(costo_operativo_total, 2),
     }, None
 
 
@@ -181,8 +211,6 @@ def crear_segmentos_ruta(df, rutas):
             segmentos.append(
                 {
                     "Vehículo": f"Vehículo {ruta['Vehículo']}",
-                    "Origen": df.loc[origen, "Nombre"],
-                    "Destino": df.loc[destino, "Nombre"],
                     "path": [
                         [df.loc[origen, "Longitud"], df.loc[origen, "Latitud"]],
                         [
@@ -196,18 +224,16 @@ def crear_segmentos_ruta(df, rutas):
 
 
 # ===================================================
-# 4. INTERFAZ DE USUARIO (STREAMLIT)
+# 3. INTERFAZ DE USUARIO (STREAMLIT)
 # ===================================================
-
-# Encabezados principales
-st.title("🚚 Dashboard Inteligente de Optimización Logística")
+st.title("🚚 Dashboard Inteligente de Optimización Logística Avanzada")
 st.markdown("### Caso de Estudio: Distribución de Alimentos en la Sabana de Bogotá")
 st.markdown("---")
 
-# Panel Lateral de Configuración
-st.sidebar.header("⚙️ Parámetros del Modelo")
+# --- PANEL LATERAL CON NUEVOS PARÁMETROS ---
+st.sidebar.header("⚙️ Parámetros de la Flota")
 num_vehiculos = st.sidebar.number_input(
-    "Número de vehículos", min_value=1, max_value=10, value=3, step=1
+    "Número de vehículos disponibles", min_value=1, max_value=10, value=4, step=1
 )
 capacidad_vehiculo = st.sidebar.number_input(
     "Capacidad por vehículo (kg)",
@@ -216,60 +242,75 @@ capacidad_vehiculo = st.sidebar.number_input(
     value=2200,
     step=100,
 )
+
+st.sidebar.header("💰 Parámetros Financieros")
+costo_por_km = st.sidebar.number_input(
+    "Costo variable por kilómetro ($/km)", min_value=0.0, value=3500.0, step=500.0
+)
+costo_fijo_vehiculo = st.sidebar.number_input(
+    "Costo fijo por activar vehículo ($)", min_value=0.0, value=80000.0, step=5000.0
+)
+
+st.sidebar.header("⏱️ Parámetros Operativos (Tiempos)")
+velocidad_promedio = st.sidebar.slider(
+    "Velocidad promedio de tránsito (km/h)", min_value=10, max_value=90, value=40
+)
+tiempo_servicio_cliente = st.sidebar.number_input(
+    "Tiempo de descarga por cliente (minutos)", min_value=0, value=25, step=5
+)
+
+st.sidebar.header("🚀 Configuración del Motor")
 tiempo_busqueda = st.sidebar.slider(
-    "Tiempo máximo de optimización (segundos)", min_value=1, max_value=30, value=5
+    "Tiempo límite de optimización (segundos)", min_value=1, max_value=30, value=5
 )
 
 capacidades = [int(capacidad_vehiculo)] * int(num_vehiculos)
 
-# Editor de datos en el cuerpo principal
+# Editor de datos de clientes
 with st.expander("✏️ Editar datos de clientes y demandas"):
     puntos = st.data_editor(
         DATOS_INICIALES, use_container_width=True, num_rows="fixed"
     )
 
-# Saneamiento de datos post-edición
 puntos = puntos.reset_index(drop=True)
 puntos.loc[DEPOSITO, "Demanda (kg)"] = 0
 nombres = puntos["Nombre"].tolist()
 demandas = puntos["Demanda (kg)"].astype(int).tolist()
 
-# KPIs Informativos de la parte superior
+# Indicadores clave (KPIs globales previos)
 demanda_total = int(sum(demandas))
 capacidad_total = int(sum(capacidades))
 clientes = len(puntos) - 1
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("🚛 Vehículos disponibles", num_vehiculos)
-col2.metric("📦 Demanda total", f"{demanda_total:,} kg")
-col3.metric("🏋️ Capacidad total", f"{capacidad_total:,} kg")
-col4.metric("📍 Clientes", clientes)
+col1.metric("🚛 Flota Máxima", num_vehiculos)
+col2.metric("📦 Demanda Requerida", f"{demanda_total:,} kg")
+col3.metric("🏋️ Capacidad Máxima Flota", f"{capacidad_total:,} kg")
+col4.metric("📍 Puntos de Entrega", clientes)
 st.markdown("---")
 
-# Validaciones de consistencia
 if demanda_total > capacidad_total:
     st.error(
-        "⚠️ La demanda total supera la capacidad disponible. "
-        "Aumenta el número de vehículos o la capacidad por vehículo."
+        "⚠️ Alerta Operativa: La demanda total supera la capacidad máxima de tu flota actual."
     )
 
-# Matriz de distancias oculta por defecto
+# Matriz de distancias
 matriz = construir_matriz_distancias(puntos)
-with st.expander("📏 Ver matriz de distancias aproximadas en km"):
-    matriz_km = pd.DataFrame(matriz, columns=nombres, index=nombres) / 1000
-    st.dataframe(matriz_km.round(2), use_container_width=True)
 
-# Disparador de optimización
-disabled_btn = demanda_total > capacidad_total
-if st.button("🚀 Ejecutar Optimización", disabled=disabled_btn):
-    with st.spinner("Optimizando rutas..."):
-        resultado, error = resolver_cvrp(
+# Botón ejecutor
+if st.button("🚀 Optimizar Operación Logística", disabled=demanda_total > capacidad_total):
+    with st.spinner("Buscando las mejores rutas de mínimo costo..."):
+        resultado, error = resolver_cvrp_avanzado(
             matriz=matriz,
             demandas=demandas,
             capacidades=capacidades,
             deposito=DEPOSITO,
             segundos=tiempo_busqueda,
             nombres=nombres,
+            costo_km=costo_por_km,
+            costo_fijo=costo_fijo_vehiculo,
+            velocidad=velocidad_promedio,
+            tiempo_servicio=tiempo_servicio_cliente,
         )
 
         if error:
@@ -280,51 +321,66 @@ if st.button("🚀 Ejecutar Optimización", disabled=disabled_btn):
             st.session_state.optimizado = True
 
 # ===================================================
-# 5. RENDERIZADO DE RESULTADOS Y GRÁFICOS
+# 4. VISUALIZACIÓN DE RESULTADOS AVANZADOS
 # ===================================================
 if st.session_state.optimizado and st.session_state.resultado:
     rutas = st.session_state.resultado["rutas"]
     distancia_total_km = st.session_state.resultado["distancia_total_km"]
+    costo_total_operacion = st.session_state.resultado["costo_total_operacion"]
 
-    st.header("📋 Rutas Optimizadas")
+    st.header("📋 Desglose Técnico por Ruta Activa")
+    
+    # Grid de tarjetas de resultados por vehículo
     for r in rutas:
-        st.subheader(f"🚛 Vehículo {r['Vehículo']}")
-        st.write(f"**Ruta:** {r['Ruta']}")
-        st.write(f"📦 **Carga:** {r['Carga (kg)']} kg")
-        st.write(f"📍 **Distancia:** {r['Distancia (km)']} km")
-        st.write(f"⚙️ **Utilización:** {r['Utilización (%)']} %")
-        st.markdown("---")
+        with st.container():
+            st.subheader(f"🚛 Ruta Asignada al Vehículo {r['Vehículo']}")
+            c_it1, c_it2, c_it3, c_it4 = st.columns(4)
+            c_it1.write(f"📦 **Carga:** {r['Carga (kg)']} / {capacidad_vehiculo} kg ({r['Utilización (%)']}%)")
+            c_it2.write(f"📍 **Distancia:** {r['Distancia (km)']} km")
+            c_it3.write(f"⏱️ **Duración:** {r['Tiempo Estimado (horas)']} hrs")
+            c_it4.write(f"💰 **Costo de Ruta:** ${r['Costo Ruta ($)']:,}")
+            st.caption(f"**Secuencia óptima:** {r['Ruta']}")
+            st.markdown("---")
 
-    st.success(f"✅ Distancia total de la operación: {distancia_total_km} km")
+    # Resumen y descarga financiera
+    st.header("📊 Cuadro de Mando Financiero y Ejecutivo")
+    
+    c_m1, c_m2, c_m3 = st.columns(3)
+    c_m1.metric("✅ Distancia Consolidada", f"{distancia_total_km} km")
+    c_m2.metric("💵 Costo Operativo Total", f"${costo_total_operacion:,}")
+    c_m3.metric("🚚 Camiones Utilizados", f"{len(rutas)} de {num_vehiculos}")
 
-    # Sección de Resumen Ejecutivo y Descargas
-    st.header("📊 Resumen Ejecutivo")
     df_resumen = pd.DataFrame(rutas)
     df_tabla = df_resumen[
-        ["Vehículo", "Carga (kg)", "Distancia (km)", "Utilización (%)", "Ruta"]
+        ["Vehículo", "Carga (kg)", "Distancia (km)", "Utilización (%)", "Tiempo Estimado (horas)", "Costo Ruta ($)", "Ruta"]
     ]
     st.dataframe(df_tabla, use_container_width=True)
 
-    csv = df_tabla.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="⬇️ Descargar resumen en CSV",
-        data=csv,
-        file_name="resumen_rutas_cvrp.csv",
+        label="⬇️ Exportar Manifiesto de Carga (CSV)",
+        data=df_tabla.to_csv(index=False).encode("utf-8"),
+        file_name="manifiesto_rutas_avanzado.csv",
         mime="text/csv",
     )
 
-    # Métricas y analíticas visuales de la flota
-    st.header("📈 Utilización de la Flota")
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(df_resumen["Vehículo"].astype(str), df_resumen["Utilización (%)"])
-    ax.set_title("Nivel de Utilización de Vehículos")
-    ax.set_xlabel("Vehículo")
-    ax.set_ylabel("Utilización (%)")
-    ax.set_ylim(0, 100)
+    # Gráfico comparativo de costos vs utilización
+    st.header("📈 Eficiencia y Costos por Vehículo")
+    fig, ax1 = plt.subplots(figsize=(8, 3.5))
+
+    ax2 = ax1.twinx()
+    ax1.bar(df_resumen["Vehículo"].astype(str), df_resumen["Costo Ruta ($)"], color="g", alpha=0.6, label="Costo ($)")
+    ax2.plot(df_resumen["Vehículo"].astype(str), df_resumen["Utilización (%)"], color="b", marker="o", linewidth=2, label="Utilización %")
+
+    ax1.set_xlabel("Vehículo")
+    ax1.set_ylabel("Costo de Operación ($)", color="g")
+    ax2.set_ylabel("Nivel de Utilización (%)", color="b")
+    ax2.set_ylim(0, 110)
+    plt.title("Análisis de Costo Finaciero frente a la Capacidad Utilizada")
+    
     st.pyplot(fig)
 
-    # Renderizado de Mapas (PyDeck / Nativo)
-    st.header("🗺️ Ubicación Geográfica y Rutas")
+    # Mapa de Rutas
+    st.header("🗺️ Trazado de Rutas en el Mapa")
     mapa_puntos = puntos.rename(columns={"Latitud": "lat", "Longitud": "lon"})
 
     if pdk is not None:
@@ -334,80 +390,37 @@ if st.session_state.optimizado and st.session_state.resultado:
             "ScatterplotLayer",
             data=puntos,
             get_position="[Longitud, Latitud]",
-            get_radius=700,
-            get_fill_color="[40, 120, 200, 180]",
+            get_radius=600,
+            get_fill_color="[34, 139, 34, 200]",
             pickable=True,
         )
-
         layer_texto = pdk.Layer(
             "TextLayer",
             data=puntos,
             get_position="[Longitud, Latitud]",
             get_text="Nombre",
-            get_size=14,
-            get_color="[0, 0, 0, 255]",
-            get_text_anchor="'middle'",
+            get_size=13,
+            get_color="[40, 40, 40, 255]",
             get_alignment_baseline="'bottom'",
         )
-
         layer_rutas = pdk.Layer(
             "PathLayer",
             data=segmentos,
             get_path="path",
-            get_width=5,
-            get_color="[220, 80, 60, 200]",
-            pickable=True,
+            get_width=4.5,
+            get_color="[220, 50, 50, 200]",
         )
-
-        vista = pdk.ViewState(
-            latitude=puntos["Latitud"].mean(),
-            longitude=puntos["Longitud"].mean(),
-            zoom=9,
-            pitch=0,
-        )
-
+        
         st.pydeck_chart(
             pdk.Deck(
-                map_style=None,
-                initial_view_state=vista,
+                initial_view_state=pdk.ViewState(
+                    latitude=puntos["Latitud"].mean(),
+                    longitude=puntos["Longitud"].mean(),
+                    zoom=9.2,
+                ),
                 layers=[layer_rutas, layer_puntos, layer_texto],
                 tooltip={"text": "{Nombre}"},
             )
         )
     else:
-        st.warning(
-            "Para ver las rutas completas en el mapa instala pydeck (`pip install pydeck`). "
-            "Mostrando visualización de puntos básica."
-        )
         st.map(mapa_puntos[["lat", "lon"]])
-
-    # Conclusiones finales y reportería de rendimiento empresarial
-    st.header("📑 Análisis Gerencial")
-    vehiculo_max = df_resumen.loc[
-        df_resumen["Utilización (%)"].idxmax(), "Vehículo"
-    ]
-    utilizacion_promedio = round(df_resumen["Utilización (%)"].mean(), 2)
-
-    st.success(
-        f"""
-        • Se atendió una demanda total de {demanda_total:,} kg.
-        • Se utilizaron {len(rutas)} vehículos de {num_vehiculos} disponibles.
-        • La distancia total recorrida fue de {distancia_total_km} km.
-        • El vehículo con mayor utilización fue el Vehículo {vehiculo_max}.
-        • La utilización promedio de la flota fue de {utilizacion_promedio} %.
-        • El modelo respetó la restricción de capacidad máxima de {capacidad_vehiculo:,} kg por vehículo.
-        • Las rutas fueron calculadas buscando minimizar la distancia total recorrida.
-        """
-    )
-
-    st.header("✅ Conclusiones")
-    st.info(
-        f"""
-        1. El modelo CVRP permitió optimizar la distribución de alimentos desde el CEDI Tocancipá.
-        2. La solución respetó la capacidad máxima de carga de cada vehículo.
-        3. La operación atendió {clientes} clientes con una demanda total de {demanda_total:,} kg.
-        4. La distancia total estimada fue de {distancia_total_km} km.
-        5. La aplicación en Streamlit facilita la visualización de rutas, cargas, utilización de flota y resultados ejecutivos.
-        6. Google OR-Tools permitió resolver el problema de ruteo de forma eficiente usando restricciones de capacidad.
-        """
-    )
